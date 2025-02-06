@@ -1,0 +1,796 @@
+---
+title: "Medication Adherence Analysis"
+author: "Martin Ng"
+output: 
+  html_document:
+    self_contained: true
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r seed}
+
+```
+
+```{r libraries}
+library(data.table)
+library(DT)
+```
+
+```{r constants}
+one_year <- 365
+two_weeks <- 14
+
+```
+
+```{r functions}
+# Function to filter adherence data for patients with N days of follow up
+filter_follow_up <- function(adherence_data, num_days) {
+  # Calculate the maximum follow-up time for each patient
+  follow_up_times <- adherence_data[, .(follow_up_time = max(t2)), by = id]
+  
+  # Filter patients with at least 1 year (365 days) of follow-up
+  patients_with_1_year <- follow_up_times[follow_up_time >= num_days, id]
+  
+  # Filter the adherence data for these patients
+  filtered_adherence <- adherence_data[id %in% patients_with_1_year]
+  
+  return(filtered_adherence)
+}
+
+# Function to find each patient's record of medication possession by medication
+find_first_adherence <- function(data, medication) {
+  data[get(medication) == 1, .SD[which.min(t1)], by = id]
+}
+
+# Function to calculate adherence days for each medication starting from the first adherence t1 for each patient
+calculate_adherence_days <- function(adherence_data, first_data, medication) {
+  # Merge the first adherence time back with the main adherence data within the first year
+  merged_data <- merge(adherence_data, first_data[, .(id, first_t1 = t1)], by = "id", all.x = TRUE)
+  
+  # Filter the rows where t1 is greater than or equal to the first time the medication was possessed
+  adherence_filtered <- merged_data[t1 >= first_t1]
+  
+  # Calculate the total adherence days for each patient
+  adherence_days_summary <- adherence_filtered[, .(adherence_days = sum((t2 - t1) * get(medication))), by = id]
+  
+  return(adherence_days_summary)
+}
+
+# Function that fits Linear Regression Models for Question 4
+q4_linear_model<- function(data) {
+  formula <- as.formula(paste("adherence_days", "~ age + gender + region + diabetes + baseline.condition"))
+  lm(formula, data = data)
+}
+
+# Define a function to determine percentage of patients filling prescriptions in N days
+calculate_percentage_filled_period <- function(adherence_data, medication, num_days) {
+  # Filter for records within the period (t1 <= num_days)
+  adherence_period <- adherence_data[t1 <= num_days]
+  
+  # Determine if each patient has filled the prescription in the period
+  filled_status <- adherence_period[, .(filled = any(get(medication) == 1)), by = id]
+  
+  # Calculate the percentage of patients who filled a prescription
+  filled_percentage <- filled_status[, .(percentage = mean(filled) * 100)]
+  
+  return(filled_percentage$percentage)
+}
+
+
+# Function to determine initiation status within N days for a given medication
+identify_initiated <- function(adherence_data, medication, num_days) {
+  initiation_status <- adherence_data[, .(initiated = as.integer(any(t1 <= num_days & get(medication) == 1))), by = id]
+  return(initiation_status)
+}
+
+# Function to fit logistic regression models in Q7
+fit_logistic_model <- function(data, outcome) {
+  formula <- as.formula(paste(outcome, "~ age + gender + region + diabetes + baseline.condition"))
+  glm(formula, data = data, family = binomial)
+}
+
+# Function to calculate statistics for the time to fill a prescription within a period
+calculate_fill_statistics <- function(adherence_data, medication, num_days) {
+  # Filter patients who filled the prescription within the first N days
+  filled_data <- adherence_data[t1 <= num_days & get(medication) == 1, .(id, t1)]
+  
+  # Get the first record for each patient where the medication was filled
+  first_fill_data <- filled_data[, .SD[which.min(t1)], by = id]
+  
+  # Calculate mean, median, and standard deviation of the time to fill
+  mean_time <- mean(first_fill_data$t1)
+  median_time <- median(first_fill_data$t1)
+  sd_time <- sd(first_fill_data$t1)
+  
+  # Return the statistics
+  list(mean = mean_time, median = median_time, sd = sd_time)
+}
+
+# Function to fit linear regression models for each medication in Q9
+q9_linear_model <- function(data, response_variable) {
+  lm(formula = as.formula(paste(response_variable, "~ age + gender + region + diabetes + baseline.condition + initiated")), data = data)
+}
+
+
+# Function to calculate the continuous duration of filled prescription
+calculate_continuous_duration <- function(adherence_data, medication) {
+  # Find the first time the prescription is filled (medication == 1)
+  first_fill <- adherence_data[get(medication) == 1, .SD[which.min(t1)], by = id]
+  
+  # Filter the data to only include patients who filled the prescription
+  filled_data <- adherence_data[id %in% first_fill$id]
+  
+  # Calculate the continuous duration from first fill until the first gap (medication == 0)
+  continuous_duration <- filled_data[, {
+    # Find the first day the prescription is filled
+    start_t1 <- min(t1[get(medication) == 1], na.rm = TRUE)
+    
+    # Find the first gap in the prescription (medication == 0)
+    end_t1 <- t1[get(medication) == 0 & t1 > start_t1]
+    
+    # If no gap occurs, set the end_t1 to the max of t2 (follow-up end)
+    if (length(end_t1) == 0) {
+      end_t1 <- max(t2)
+    } else {
+      end_t1 <- min(end_t1, na.rm = TRUE)
+    }
+    
+    # Calculate duration
+    duration <- end_t1 - start_t1
+    .(duration = duration)
+  }, by = id]
+  
+  return(continuous_duration)
+}
+
+
+```
+
+```{r load_data}
+adherence <- fread(file.path("..", "data", "adherence.csv"), verbose = F)
+baseline_measurements <- fread(file.path("..", "data", "baseline_measurements.csv"), verbose = F)
+```
+
+```{r explore_data, eval = FALSE}
+
+```
+
+
+```{r clean_data}
+
+```
+
+
+## Adherence Report {.tabset}
+
+
+### Q1 {.tabset}
+
+A patient's **length of follow-up** is the amount of time after diagnosis for which they were under observation (with records in the data).  What was the median length of follow-up time?  What percentage of the patients had at least 1 year (365 days) of records?
+
+```{r q1}
+# Calculate the maximum t2 for each patient (representing total follow-up time)
+follow_up_times <- adherence[, .(follow_up_time = max(t2)), by = id]
+
+# Calculate the median follow-up time
+median_follow_up <- median(follow_up_times$follow_up_time)
+
+# Calculate the percentage of patients with at least 1 year (365 days) of follow-up
+adherence_1_year <- filter_follow_up(adherence, one_year)
+num_patients_1_year <- uniqueN(adherence_1_year$id)
+total_patients <- nrow(baseline_measurements)
+percentage_1_year <- (num_patients_1_year / total_patients) * 100
+
+# Create a data.table to store the results
+results <- data.table(
+  Metric = c("Median Follow-up Time", "Percentage of Patients with ≥ 1 Year Follow-up"),
+  Value = c(paste0(median_follow_up, " days"), paste0(round(percentage_1_year, 2), "%"))
+)
+
+# Output the data.table
+datatable(results, rownames = FALSE, options = list(dom = 't', ordering = FALSE))
+```
+
+
+### Q2
+
+For patients with at least 1 year (365 days) of follow-up, their **one-year adherence** to a medication is the proportion of days in the first year after diagnosis during which the medication was possessed.  For each medication, what was the average one-year adherence of the patients?  Use only the patients with at least 1 year of follow-up records.
+
+```{r q2}
+# Filter patients with at least 1 year of follow-up using the function from earlier
+adherence_filtered <- filter_follow_up(adherence, one_year)
+
+# Keep only records within the first year (t2 <= 365)
+adherence_1_year <- adherence_filtered[t1 < one_year]
+adherence_1_year[, t2 := pmin(t2, one_year)] # Clip t2 at 365 days to stay within the first year
+
+# Find first adherence for each medication
+first_ace <- find_first_adherence(adherence_1_year, "ace")
+first_bb <- find_first_adherence(adherence_1_year, "bb")
+first_statin <- find_first_adherence(adherence_1_year, "statin")
+
+# Calculate adherence days for each medication
+ace_adherence_days <- calculate_adherence_days(adherence_1_year, first_ace, "ace")
+bb_adherence_days <- calculate_adherence_days(adherence_1_year, first_bb, "bb")
+statin_adherence_days <- calculate_adherence_days(adherence_1_year, first_statin, "statin")
+
+# Calculate the average one-year adherence for each medication
+average_ace_adherence <- mean(ace_adherence_days$adherence_days) / one_year * 100
+average_bb_adherence <- mean(bb_adherence_days$adherence_days) / one_year * 100
+average_statin_adherence <- mean(statin_adherence_days$adherence_days) / one_year * 100
+
+# Create a data.table to store the results
+results <- data.table(
+  Metric = c("ACE Inhibitor", 
+              "Beta Blocker",
+              "Statin"),
+  Value = c(round(average_ace_adherence, 2), 
+            round(average_bb_adherence, 2),
+            round(average_statin_adherence, 2))
+)
+
+results$Value <- paste0(results$Value, "%")
+setnames(results, old = c("Metric", "Value"), new = c("Medications", "Average One Year Adherence"))
+
+# Output the data.table
+datatable(results, rownames = FALSE, options = list(dom = 't', ordering = FALSE, autoWidth = FALSE, columnDefs = list(
+      list(width = '150px', targets = 0),  # Set the width of the first column
+      list(width = '150px', targets = 1),  # Set the width of the second column
+      list(className = 'dt-center', targets = '_all')  # Center align all columns
+    )))
+
+```
+
+### Q3
+
+For ace inhibitors, beta blockers, and statins, we are interested in the number of these medications that patients take at the same time.  During the first year (365 days), how frequently are the patients taking 0, 1, 2, or all 3 medications?  
+
+Only perform this calculation among patients with at least one year of follow-up.  Create a table that shows the percentage for each number of medications taken.
+
+
+```{r q3}
+# Filter patients with at least one year of follow-up
+adherence_filtered <- filter_follow_up(adherence, one_year)
+
+# Filter data to include only the first year (t2 <= 365)
+adherence_1_year <- adherence_filtered[t1 < one_year]
+adherence_1_year[, t2 := pmin(t2, one_year)]  # Clip t2 at 365 days to stay within the first year
+
+# Calculate the number of medications taken concurrently for each interval
+adherence_1_year[, num_meds := ace + bb + statin]
+
+# Calculate the total number of days each patient is on 0, 1, 2, or 3 medications
+# Sum the days based on the number of medications taken concurrently
+concurrent_meds_summary <- adherence_1_year[, .(days = sum(t2 - t1)), by = num_meds]
+
+# Calculate the percentage of the time patients were on 0, 1, 2, or 3 medications
+total_days <- sum(concurrent_meds_summary$days)
+concurrent_meds_summary[, percentage := (days / total_days) * 100]
+
+# Create the table that shows the percentage for each number of medications taken
+concurrent_meds_summary <- concurrent_meds_summary[order(num_meds)]
+
+# Output the data.table
+results <- concurrent_meds_summary[, .(num_meds, round(percentage,2))]
+results$V2 <- paste0(results$V2, "%")
+setnames(results, old = c("num_meds", "V2"), new = c("Number of Medications", "Percentage"))
+datatable(results, rownames = FALSE, options = list(dom = 't', ordering = FALSE, autoWidth = FALSE, columnDefs = list(
+      list(width = '150px', targets = 0),  # Set the width of the first column
+      list(width = '150px', targets = 1),  # Set the width of the second column
+      list(className = 'dt-center', targets = '_all')  # Center align all columns
+    )))
+```
+
+### Q4 {.tabset}
+
+What is the impact of diabetes, age, gender, region, and baseline condition on the one-year adherence to each medication?  Use only the patients with at least 1 year (365 days) of follow-up records.  Fit separate linear regression models for each medicine.  Then briefly comment on the results.
+
+```{r one.year.adherence.model.dat}
+# Filter patients with at least one year of follow-up
+adherence_one_year <- filter_follow_up(adherence, one_year)
+
+# Filter data to include only the first year (t2 <= 365)
+adherence_one_year <- adherence_filtered[t1 < 365]
+adherence_one_year[, t2 := pmin(t2, 365)]  # Clip t2 at 365 days to stay within the first year
+
+# Find first record of medication possession for each medication
+first_ace <- find_first_adherence(adherence_one_year, "ace")
+first_bb <- find_first_adherence(adherence_one_year, "bb")
+first_statin <- find_first_adherence(adherence_one_year, "statin")
+
+# Calculate adherence for each medication starting from the first possession
+adherence_ace <- calculate_adherence_days(adherence_one_year, first_ace, "ace")
+adherence_bb <- calculate_adherence_days(adherence_one_year, first_bb, "bb")
+adherence_statin <- calculate_adherence_days(adherence_one_year, first_statin, "statin")
+
+adherence_ace$adherence_days <- adherence_ace$adherence_days / one_year
+adherence_bb$adherence_days <- adherence_bb$adherence_days / one_year
+adherence_statin$adherence_days <- adherence_statin$adherence_days / one_year
+
+# Merge adherence data with baseline measurements
+ace_data <- merge(adherence_ace, baseline_measurements, by = "id")
+bb_data <- merge(adherence_bb, baseline_measurements, by = "id")
+statin_data <- merge(adherence_statin, baseline_measurements, by = "id")
+
+# Fit Linear Regression Models
+ace_model <- q4_linear_model(ace_data)
+bb_model <- q4_linear_model(bb_data)
+statin_model <- q4_linear_model(statin_data)
+```
+
+#### ACE Inhibitors
+
+```{r q4_ace}
+ace_summary <- summary(ace_model)
+ace_coef <- coef(ace_model)
+
+df_ace_summary <- round(ace_summary$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_ace_summary)[colnames(df_ace_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_ace_summary, options = list(dom = 't'))
+```
+
+Summary of Significant Results (where p-value < 0.05):
+
+* **Older patients**, **males**, and those with **moderate health conditions** are **less likely to adhere** to their ACE inhibitor regimen.
+
+* Patients with **diabetes**, and those living in the **Northeast** or **West** regions show **higher adherence rates**.
+
+
+#### Beta Blockers
+
+```{r q4_bb}
+bb_summary <- summary(bb_model)
+bb_coef <- coef(bb_model)
+
+df_bb_summary <- round(bb_summary$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_bb_summary)[colnames(df_bb_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_bb_summary, options = list(dom = 't'))
+```
+
+Summary of Significant Results (where p-value < 0.05):
+
+* **Older patients**, **males**, and those with **moderate health conditions** are **less likely to adhere** to their beta blocker regimen.
+
+* Patients with **diabetes**, and those living in the **Northeast** or **West** regions show **higher adherence rates**.
+
+
+#### Statins
+
+```{r q4_statin}
+statin_summary <- summary(statin_model)
+statin_coef <- coef(statin_model)
+
+df_statin_summary <- round(statin_summary$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_statin_summary)[colnames(df_statin_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_statin_summary, options = list(dom = 't'))
+```
+
+Summary of Significant Results (where p-value < 0.05):
+
+* **Older patients**, **males**, and those with **moderate health conditions** are **less likely to adhere** to their statin regimen.
+
+* Patients with **diabetes**, and those living in the **Northeast** or **West** regions show **higher adherence rates**.
+
+### Q5
+
+For each medicine, what percentage of the patients filled a prescription in the first two weeks (before day t1 = 14) after their initial diagnoses?  Use data from all of the patients for this analysis, classifying each one as filling or not filling the prescription during this period.
+
+```{r q5}
+# Calculate the percentage of patients filling prescriptions for each medication
+percentage_ace <- calculate_percentage_filled_period(adherence, "ace",two_weeks)
+percentage_bb <- calculate_percentage_filled_period(adherence, "bb",two_weeks)
+percentage_statin <- calculate_percentage_filled_period(adherence, "statin",two_weeks)
+
+# Create a data.table to store the results
+results <- data.table(
+  Metric = c("ACE Inhibitor", 
+              "Beta Blocker",
+              "Statin"),
+  Value = c(round(percentage_ace, 2), 
+            round(percentage_bb, 2),
+            round(percentage_statin, 2))
+)
+
+results$Value <- paste0(results$Value, "%")
+setnames(results, old = c("Metric", "Value"), new = c("Medications", "Percentage"))
+
+# Output the data.table
+datatable(results, rownames = FALSE, options = list(dom = 't', ordering = FALSE, autoWidth = FALSE, columnDefs = list(
+      list(width = '150px', targets = 0),  # Set the width of the first column
+      list(width = '150px', targets = 1),  # Set the width of the second column
+      list(className = 'dt-center', targets = '_all')  # Center align all columns
+    )))
+
+```
+
+### Q6 {.tabset}
+
+Now let's compare those who filled a prescription for a statin in the first two weeks (before day t1 = 14) after diagnosis to those who did not.  Do these two groups have different baseline covariates?  Compare the groups based on their ages.  Then compare the distribution of baseline conditions in the two groups. For continuous variables, compare their means using a t-test.  For the categorical variables, compare their distributions using a chi-squared test of independence.  
+
+#### Age
+
+The **t-test** was conducted to compare the ages of two groups:
+
+1. **Group 1**: Patients who filled a prescription for a statin within the first two weeks (early initiators).
+2. **Group 2**: Patients who did not fill a prescription for a statin within the first two weeks (non-initiators).
+```{r q6_age}
+# Determine if patients filled a statin prescription in the first two weeks
+filled_statins_status <- adherence[t1 <= two_weeks, .(filled_statin = any(statin == 1)), by = id]
+
+# Merge with baseline measurements to get baseline covariates for each patient
+merged_data <- merge(filled_statins_status, baseline_measurements, by = "id")
+
+# Split patients into two groups: filled_statin = TRUE or FALSE
+group_filled <- merged_data[filled_statin == TRUE]
+group_not_filled <- merged_data[filled_statin == FALSE]
+
+# Compare Age (Continuous Variable) Using a T-Test
+t_test_result <- t.test(group_filled$age, group_not_filled$age, var.equal = TRUE)
+
+# Print T-Test Result
+t_value <- t_test_result$statistic
+p_value <- t_test_result$p.value
+interval <- t_test_result$conf.int[1:2]
+interval_str <- paste(round(interval[1], 6), "to", round(interval[2], 6))
+estimates <- t_test_result$estimate
+group1mean <- estimates[1]
+group2mean <- estimates[2]
+
+# Create a data.table to store the results
+results <- data.table(
+  Metric = c("t-value", 
+             "p-value",
+             "95% Confidence Interval",
+             "Mean of Group 1",
+             "Mean of Group 2"),
+  Value = c(round(t_value,3), 
+            round(p_value,3),
+            interval_str,
+            round(group1mean,3),
+            round(group2mean,3))
+)
+
+# Output the data.table
+datatable(results, caption = "T-test output",rownames = FALSE, options = list(dom = 't', ordering = FALSE, autoWidth = FALSE, columnDefs = list(
+  list(width = '150px', targets = 0),  # Set the width of the first column
+  list(width = '150px', targets = 1),  # Set the width of the second column
+  list(className = 'dt-center', targets = '_all')  # Center align all columns
+)))
+```
+
+**Interpretation**:
+
+* Statistical significance: The p-value is very small (p < 0.01), meaning the difference in the average ages of the two groups is statistically significant, which is further confirmed by the 95% confidence interval for the difference in means is between `r interval_str` and does not include 0.
+
+* Direction of the difference: The negative t-value (`r t_value`) indicates that the mean age of Group 1 (early initiators) is lower than the mean age of Group 2 (non-initiators). Specifically, the mean age for early initiators is about `r group1mean` years, while the mean age for non-initiators is `r group2mean` years.
+
+**Conclusion**: 
+
+There is a **small but significant difference** in age between the two groups. Patients who **filled a statin prescription within the first two weeks** are, on average, **slightly younger** than those who did not.
+
+
+#### Baseline Conditions
+
+The **Chi-squared test** was used to compare the distribution of baseline conditions between the two groups.
+```{r q6_baseline.condition}
+# Compare Baseline Conditions (Categorical Variable) Using Chi-Squared Test
+# Create a contingency table for the baseline condition variable
+contingency_table <- table(merged_data$filled_statin, merged_data$baseline.condition)
+
+# Perform chi-squared test
+chi_squared_result <- chisq.test(contingency_table)
+
+# Print Chi-Squared Test Result
+xsquared <- chi_squared_result$statistic
+chi_p_value <- chi_squared_result$p.value
+
+# Create a data.table to store the results
+results <- data.table(
+  Metric = c("Chi-squared statistic", 
+             "p-value"),
+  Value = c(round(xsquared,3), 
+            round(chi_p_value,3))
+)
+
+# Output the data.table
+datatable(results, caption = "Chi-squared test output" ,rownames = FALSE, options = list(dom = 't', ordering = FALSE, autoWidth = FALSE, columnDefs = list(
+  list(width = '150px', targets = 0),  # Set the width of the first column
+  list(width = '150px', targets = 1),  # Set the width of the second column
+  list(className = 'dt-center', targets = '_all')  # Center align all columns
+)))
+```
+
+**Interpretation**:
+
+* Statistical significance: The p-value is extremely small (p < 0.01), which means the difference in the distribution of baseline conditions between the two groups is statistically significant.
+
+* Chi-squared statistic: A large chi-squared value (126.34) indicates that the difference between the expected and observed frequencies for the baseline conditions is substantial.
+
+**Conclusion**:
+There is a **statistically significant difference** in the baseline conditions between patients who filled a statin prescription within the first two weeks and those who did not. This suggests that baseline health conditions play a role in whether a patient initiates their medication early or not.
+
+### Q7 {.tabset}
+
+How do the variables of age, gender, region, diabetes, and baseline condition impact the likelihood of initiating a medication within 14 days (before day t1 = 14)?  For each medicine, fit a logistic regression model and comment on the odds ratios.  Use data from all of the patients for this analysis.
+
+```{r q7}
+# Determine initiation status for each medication within 14 days
+initiation_ace <- identify_initiated(adherence, "ace", two_weeks)
+initiation_bb <- identify_initiated(adherence, "bb", two_weeks)
+initiation_statin <- identify_initiated(adherence, "statin", two_weeks)
+
+# Merge initiation status with baseline measurements to get covariates
+data_ace <- merge(initiation_ace, baseline_measurements, by = "id")
+data_bb <- merge(initiation_bb, baseline_measurements, by = "id")
+data_statin <- merge(initiation_statin, baseline_measurements, by = "id")
+
+# Fit logistic models for each medication
+model_ace <- fit_logistic_model(data_ace, "initiated")
+model_bb <- fit_logistic_model(data_bb, "initiated")
+model_statin <- fit_logistic_model(data_statin, "initiated")
+
+# Extract odds ratios for each model
+odds_ratios_ace <- exp(coef(model_ace))
+odds_ratios_bb <- exp(coef(model_bb))
+odds_ratios_statin <- exp(coef(model_statin))
+```
+
+#### ACE Inhibitors
+
+```{r q7_ace}
+odds_ratios_dt_ace <- data.table(
+  Variable = names(odds_ratios_ace),
+  Odds_Ratio = round(odds_ratios_ace, 3)
+)
+
+datatable(odds_ratios_dt_ace, rownames = FALSE, options = list(dom = 't'),
+          caption = 'Odds Ratios for ACE Inhibitors')
+```
+
+Interpretation: 
+
+* The odds of initiating the medication within 14 days are higher for patients with diabetes and those living in the Northeast, South, and West regions, 
+
+* Older patients and males are slightly less likely to initiate within two weeks. 
+
+* Patients with moderate symptoms or light procedures are much less likely to initiate within 14 days.
+
+
+#### Beta Blockers
+
+```{r q7_bb}
+odds_ratios_dt_bb <- data.table(
+  Variable = names(odds_ratios_bb),
+  Odds_Ratio = round(odds_ratios_bb, 3)
+)
+
+datatable(odds_ratios_dt_bb, rownames = FALSE, options = list(dom = 't'),
+          caption = 'Odds Ratios for Beta Blockers')
+```
+
+* The odds of initiating the medication within 14 days are higher for patients with diabetes and those living in the Northeast, South, and West regions, 
+
+* Older patients and males are slightly less likely to initiate within two weeks. 
+
+* Patients with moderate symptoms or light procedures are much less likely to initiate within 14 days.
+
+#### Statins
+
+```{r q7_statins}
+odds_ratios_dt_statin <- data.table(
+  Variable = names(odds_ratios_statin),
+  Odds_Ratio = round(odds_ratios_statin, 3)
+)
+
+datatable(odds_ratios_dt_statin, rownames = FALSE, options = list(dom = 't'),
+          caption = 'Odds Ratios for Statins')
+```
+
+* The odds of initiating the medication within 14 days are higher for patients with diabetes and those living in the Northeast, South, and West regions, 
+
+* Older patients and males are slightly less likely to initiate within two weeks. 
+
+* Patients with moderate symptoms or light procedures are much less likely to initiate within 14 days.
+
+### Q8 {.tabset}
+
+For patients who did fill their prescriptions within 2 weeks (before day t1 = 14), how long does it typically take to fill that first prescription after the initial diagnosis?  For each medicine, provide the mean, median, and standard deviation in units of days.
+
+```{r q8}
+# Step 1: Calculate statistics for each medication
+stats_ace <- calculate_fill_statistics(adherence, "ace", two_weeks)
+stats_bb <- calculate_fill_statistics(adherence, "bb", two_weeks)
+stats_statin <- calculate_fill_statistics(adherence, "statin", two_weeks)
+```
+
+#### ACE Inhibitors
+
+```{r q8_ace}
+dt_ace <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                       Days = c(round(stats_ace$mean,2),
+                                round(stats_ace$median,2), 
+                                round(stats_ace$sd,2)))
+datatable(dt_ace, rownames = FALSE, options = list(dom = 't'))
+```
+
+
+#### Beta Blockers
+
+```{r q8_bb}
+dt_bb <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                      Days = c(round(stats_bb$mean,2),
+                               round(stats_bb$median,2), 
+                               round(stats_bb$sd,2)))
+datatable(dt_bb, rownames = FALSE, options = list(dom = 't'))
+```
+
+
+#### Statins
+
+```{r q8_statin}
+dt_statin <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                          Days = c(round(stats_statin$mean,2),
+                                   round(stats_statin$median,2), 
+                                   round(stats_statin$sd,2)))
+datatable(dt_statin, rownames = FALSE, options = list(dom = 't'))
+```
+
+### Q9 {.tabset}
+
+How does filling a prescription in the first two weeks impact adherence?  If we want to see that a medicine is working, we need to start the observation after the patient has had a chance to fill the prescription.  To answer this question, we will follow a number of steps:
+
+1.  Identify which patients filled a prescription in the first two weeks.  You can call this variable **initiated** with binary values (1 for yes, 0 for no).
+
+2.  Then, for each patient with at least 379 days of followup, measure the one-year adherence rate (see Question 2) **starting at two weeks after the initial diagnosis**.  This interval will begin at day 14 and last for 365 days.
+
+3.  Fit a linear regression model of this one-year adherence including the baseline covariates (age, gender, region, diabetes, baseline condition) and an indicator of whether this patient filled a prescription for the medicine in the first two weeks.
+
+Perform this analysis for each medicine and comment on the results.
+
+```{r q9}
+# Identify which patients filled a prescription in the first two weeks (14 days)
+initiation_ace <- identify_initiated(adherence, "ace", two_weeks)
+initiation_bb <- identify_initiated(adherence, "bb", two_weeks)
+initiation_statin <- identify_initiated(adherence, "statin", two_weeks)
+
+# Filter for patients with at least 379 days (14 days + 365 days) of follow-up
+adherence_filtered <- filter_follow_up(adherence, 379)
+
+# Clip t1 to 14 and t2 to 379, but exclude records where t2 < 14
+adherence_1_year <- adherence_filtered[t2 >= two_weeks & t1 < 379]    # Exclude rows where t2 < 14 
+adherence_1_year[, t1 := pmax(t1, two_weeks)]              # Set t1 to 14 if it's less than 14
+adherence_1_year[, t2 := pmin(t2, 379)]             # Clip t2 at 379 days to stay within the first year
+
+# Calculate one-year adherence starting from day 14 for each medication
+first_ace <- find_first_adherence(adherence_1_year, "ace")
+first_bb <- find_first_adherence(adherence_1_year, "bb")
+first_statin <- find_first_adherence(adherence_1_year, "statin")
+
+# Use original function for calculating adherence days
+adherence_ace <- calculate_adherence_days(adherence_1_year, first_ace, "ace")
+adherence_bb <- calculate_adherence_days(adherence_1_year, first_bb, "bb")
+adherence_statin <- calculate_adherence_days(adherence_1_year, first_statin, "statin")
+
+# Convert adherence days into percentages of 365 days
+adherence_ace$adherence_days <- adherence_ace$adherence_days / one_year
+adherence_bb$adherence_days <- adherence_bb$adherence_days / one_year
+adherence_statin$adherence_days <- adherence_statin$adherence_days / one_year
+
+# Merge adherence data with initiation status and baseline covariates for each medication
+ace_data <- merge(adherence_ace, initiation_ace, by = "id")
+ace_data <- merge(ace_data, baseline_measurements, by = "id")
+
+bb_data <- merge(adherence_bb, initiation_bb, by = "id")
+bb_data <- merge(bb_data, baseline_measurements, by = "id")
+
+statin_data <- merge(adherence_statin, initiation_statin, by = "id")
+statin_data <- merge(statin_data, baseline_measurements, by = "id")
+
+# Fit linear regression models for each medication
+ace_model <- q9_linear_model(ace_data, "adherence_days")
+bb_model <- q9_linear_model(bb_data, "adherence_days")
+statin_model <- q9_linear_model(statin_data, "adherence_days")
+model_ace <- summary(ace_model)
+model_bb <- summary(bb_model)
+model_statin <- summary(statin_model)
+```
+
+#### ACE Inhibitors
+
+```{r q9_ace}
+ace_coef <- coef(model_ace)
+df_ace_summary <- round(model_ace$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_ace_summary)[colnames(df_ace_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_ace_summary, options = list(dom = 't'))
+
+```
+
+Interpretation:
+
+* Early initiation (most significant), being female, living in the Northeast or West, and having diabetes are all associated with higher adherence rates for ACE inhibitors.
+
+
+#### Beta Blockers
+
+```{r q9_bb}
+bb_coef <- coef(model_bb)
+df_bb_summary <- round(model_bb$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_bb_summary)[colnames(df_bb_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_bb_summary, options = list(dom = 't'))
+```
+
+Interpretation:
+
+* Early initiation (most significant), being female, living in the Northeast or West, and having diabetes are all associated with higher adherence rates for Beta Blockers.
+
+#### Statins
+
+```{r q9_statin}
+statin_summary <- summary(model_statin)
+df_statin_summary <- round(model_statin$coefficients[, c("Estimate", "Pr(>|t|)")],3)
+colnames(df_statin_summary)[colnames(df_statin_summary) == "Pr(>|t|)"] <- "p-value"
+datatable(df_statin_summary, options = list(dom = 't'))
+```
+
+Interpretation:
+
+* Early initiation (most significant), being female, living in the Northeast or West, and having diabetes are all associated with higher adherence rates for Statin.
+
+### Q10 {.tabset}
+
+Once a patient starts a medication, how long do they continuously have a filled prescription?  For each patient who filled a medication, start with the first filled prescription and count the duration of days until a gap occurs or follow-up ends.  (Hint: The first duration begins the first time ace = 1. The first duration ends at the first time ace = 0 after this point. Each patient will have 1 calculated duration if they filled a prescription and 0 otherwise.)  Then provide the mean, median, and standard deviation for these durations.  Do this separately for each medicine.
+
+```{r q10}
+# Step 1: Calculate durations for each medication
+duration_ace <- calculate_continuous_duration(adherence, "ace")
+duration_bb <- calculate_continuous_duration(adherence, "bb")
+duration_statin <- calculate_continuous_duration(adherence, "statin")
+
+# Step 2: Calculate summary statistics (mean, median, standard deviation)
+calculate_summary_stats <- function(duration_data) {
+  mean_duration <- mean(duration_data$duration, na.rm = TRUE)
+  median_duration <- median(duration_data$duration, na.rm = TRUE)
+  sd_duration <- sd(duration_data$duration, na.rm = TRUE)
+  
+  list(mean = mean_duration, median = median_duration, sd = sd_duration)
+}
+
+# Get statistics for each medication
+stats_ace <- calculate_summary_stats(duration_ace)
+stats_bb <- calculate_summary_stats(duration_bb)
+stats_statin <- calculate_summary_stats(duration_statin)
+```
+
+#### ACE Inhibitors
+
+```{r q10_ace}
+dt_ace <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                      Days = c(round(stats_ace$mean,2),
+                                round(stats_ace$median,2), 
+                                round(stats_ace$sd,2)))
+datatable(dt_ace, rownames = FALSE, options = list(dom = 't'))
+```
+
+#### Beta Blockers
+```{r q10_bb}
+dt_bb <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                      Days = c(round(stats_bb$mean,2),
+                               round(stats_bb$median,2), 
+                               round(stats_bb$sd,2)))
+datatable(dt_bb, rownames = FALSE, options = list(dom = 't'))
+```
+
+#### Statins
+```{r q10_statin}
+dt_statin <- data.table(Metric = c("Mean", "Median", "Standard Deviation"), 
+                          Days = c(round(stats_statin$mean,2),
+                                   round(stats_statin$median,2), 
+                                   round(stats_statin$sd,2)))
+datatable(dt_statin, rownames = FALSE, options = list(dom = 't'))
+```
+
+

@@ -1,0 +1,337 @@
+---
+title: "Medication Adherence: Independent Investigation"
+author: "Martin Ng"
+output: 
+  html_document:
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r seed}
+set.seed(41)
+```
+
+```{r libraries}
+library(data.table)
+library(DT)
+```
+
+```{r constants}
+one_year <- 365
+two_weeks <- 14
+
+```
+
+```{r functions}
+# Define a function to filter adherence data for patients with N days of follow up
+filter_follow_up <- function(adherence_data, num_days) {
+  # Calculate the maximum follow-up time for each patient
+  follow_up_times <- adherence_data[, .(follow_up_time = max(t2)), by = id]
+  
+  # Filter patients with at least 1 year (365 days) of follow-up
+  patients_with_1_year <- follow_up_times[follow_up_time >= num_days, id]
+  
+  # Filter the adherence data for these patients
+  filtered_adherence <- adherence_data[id %in% patients_with_1_year]
+  
+  return(filtered_adherence)
+}
+```
+
+```{r load_data}
+adherence <- fread(file.path("..", "data", "adherence.csv"), verbose = F)  
+baseline_measurements <- fread(file.path("..", "data", "baseline_measurements.csv"), verbose = F)
+```
+
+```{r explore_data, eval = FALSE}
+
+```
+
+
+```{r clean_data}
+
+```
+
+
+
+## Introduction {.tabset}
+
+Apart from discussing the questions provided, we have explored some potential areas that could generate more valuable insights.
+
+
+### Early vs non-initiators {.tabset}
+
+In the monthly report, we explored the difference in covariates between those who filled a prescription for a **statin** in the first two weeks and those who did not. However, we haven't explored this for **Ace inhibitors** and **beta blockers**. 
+
+Patients prescribed ACE inhibitors or beta blockers may have **different average age and baseline health conditions** compared to those on statins. Including these medications allows for the identification of demographic or clinical factors that influence early initiation of filling prescription in different patient subgroups.
+
+#### Age
+
+The **t-test** was conducted to compare the age of those who filled a prescription for medications in the first two weeks (before day t1 = 14) after diagnosis to those who did not.
+
+1. **Group 1**: Patients who **filled** a prescription for a medication within the first two weeks (early initiators).
+2. **Group 2**: Patients who **did not fill** a prescription for a medication within the first two weeks (non-initiators).
+
+```{r}
+### Ace
+# Determine if patients filled a ace prescription in the first two weeks
+filled_aces_status <- adherence[t1 <= two_weeks, .(filled_ace = any(ace == 1)), by = id]
+
+# Merge with baseline measurements to get baseline covariates for each patient
+merged_ace_data <- merge(filled_aces_status, baseline_measurements, by = "id")
+
+# Split patients into two groups: filled_ace = TRUE or FALSE
+group_filled <- merged_ace_data[filled_ace == TRUE]
+group_not_filled <- merged_ace_data[filled_ace == FALSE]
+
+# Compare Age (Continuous Variable) Using a T-Test
+t_test_result <- t.test(group_filled$age, group_not_filled$age, var.equal = TRUE)
+
+# T-Test Result
+t_value_ace <- t_test_result$statistic
+p_value_ace <- t_test_result$p.value
+interval_ace <- t_test_result$conf.int[1:2]
+interval_str_ace <- paste(round(interval_ace[1], 6), "to", round(interval_ace[2], 6))
+estimates_ace <- t_test_result$estimate
+group1mean_ace <- estimates_ace[1]
+group2mean_ace <- estimates_ace[2]
+age_diff_ace <- group2mean_ace - group1mean_ace
+
+
+### Bb
+# Determine if patients filled a bb prescription in the first two weeks
+filled_bbs_status <- adherence[t1 <= two_weeks, .(filled_bb = any(bb == 1)), by = id]
+
+# Merge with baseline measurements to get baseline covariates for each patient
+merged_bb_data <- merge(filled_bbs_status, baseline_measurements, by = "id")
+
+# Split patients into two groups: filled_bb = TRUE or FALSE
+group_filled <- merged_bb_data[filled_bb == TRUE]
+group_not_filled <- merged_bb_data[filled_bb == FALSE]
+
+# Compare Age (Continuous Variable) Using a T-Test
+t_test_result <- t.test(group_filled$age, group_not_filled$age, var.equal = TRUE)
+
+# T-Test Result
+t_value_bb <- t_test_result$statistic
+p_value_bb <- t_test_result$p.value
+interval_bb <- t_test_result$conf.int[1:2]
+interval_str_bb <- paste(round(interval_bb[1], 6), "to", round(interval_bb[2], 6))
+estimates_bb <- t_test_result$estimate
+group1mean_bb <- estimates_bb[1]
+group2mean_bb <- estimates_bb[2]
+age_diff_bb <- group2mean_bb - group1mean_bb
+
+### Statin
+# Determine if patients filled a statin prescription in the first two weeks
+filled_statins_status <- adherence[t1 <= two_weeks, .(filled_statin = any(statin == 1)), by = id]
+
+# Merge with baseline measurements to get baseline covariates for each patient
+merged_data <- merge(filled_statins_status, baseline_measurements, by = "id")
+
+# Split patients into two groups: filled_statin = TRUE or FALSE
+group_filled <- merged_data[filled_statin == TRUE]
+group_not_filled <- merged_data[filled_statin == FALSE]
+
+# Compare Age (Continuous Variable) Using a T-Test
+t_test_result <- t.test(group_filled$age, group_not_filled$age, var.equal = TRUE)
+
+# T-Test Result
+t_value_statin <- t_test_result$statistic
+p_value_statin <- t_test_result$p.value
+interval_statin <- t_test_result$conf.int[1:2]
+interval_str_statin <- paste(round(interval_statin[1], 6), "to", round(interval_statin[2], 6))
+estimates_statin <- t_test_result$estimate
+group1mean_statin <- estimates_statin[1]
+group2mean_statin <- estimates_statin[2]
+age_diff_statin <- group2mean_statin - group1mean_statin 
+
+### Together
+comparison_table <- data.table(
+  Medication = c("ACE Inhibitors", "Beta Blockers", "Statins"),
+  T_Value = c(round(t_value_ace,3), round(t_value_bb,3), round(t_value_statin,3)),
+  P_Value = c(round(p_value_ace,3), round(p_value_bb,3), round(p_value_statin,3)),
+  `Mean of Group 1` = c(round(group1mean_ace,3), round(group1mean_bb,3), round(group1mean_statin,3)),
+  `Mean of Group 2` = c(round(group2mean_ace,3), round(group2mean_bb,3), round(group2mean_statin,3)),
+  `Age Difference (Group 2 - Group 1)` = c(round(age_diff_ace,3), round(age_diff_bb,3), round(age_diff_statin,3))
+)
+
+# Output the table 
+datatable(comparison_table, caption = "Comparison of T-Test Results for ACE Inhibitors, Beta Blockers, and Statins", rownames = FALSE, options = list(dom = 't'))
+
+```
+
+**Key Observations**:
+
+1. Age Differences:
+
+* For **all three medications**, early initiators are **slightly younger** than non-initiators, though the age differences are relatively small (less than 1 year on average).
+
+* **Beta blockers** show the **largest age difference** between early initiators and non-initiators (0.79 years), which is supported by its largest t-value, followed by statins (0.63 years) and ACE inhibitors (0.59 years). 
+
+2. Significance:
+
+* For all three medications (ACE inhibitors, beta blockers, and statins), the p-values are extremely small, indicating that the age difference between early initiators and non-initiators is highly statistically significant.
+
+
+**Conclusions**: 
+
+The comparison across ACE inhibitors, beta blockers, and statins reveals that younger patients tend to fill their prescriptions earlier for all three medication classes, with beta blockers showing the largest difference in age between early and late/non-initiators. 
+
+**Potential benefits of this question**:
+
+These insights can inform healthcare providers when identifying which patient groups may require more support or education to initiate their treatment promptly.
+
+
+#### Baseline Conditions
+
+The **Chi-squared test** was used to compare the distribution of baseline conditions between the two groups:
+
+1. **Group 1**: Patients who **filled** a prescription for an **ace** within the first two weeks (early initiators).
+2. **Group 2**: Patients who **did not fill** a prescription for an **ace** within the first two weeks (non-initiators).
+
+```{r}
+# Ace
+# Create a contingency table for the baseline condition variable
+contingency_table <- table(merged_ace_data$filled_ace, merged_ace_data$baseline.condition)
+
+# Perform chi-squared test
+chi_squared_result_ace <- chisq.test(contingency_table)
+
+# Print Chi-Squared Test Result
+xsquared_ace <- chi_squared_result_ace$statistic
+chi_p_value_ace <- chi_squared_result_ace$p.value
+
+# Bb
+# Create a contingency table for the baseline condition variable
+contingency_table <- table(merged_bb_data$filled_bb, merged_bb_data$baseline.condition)
+
+# Perform chi-squared test
+chi_squared_result_bb <- chisq.test(contingency_table)
+
+# Print Chi-Squared Test Result
+xsquared_bb <- chi_squared_result_bb$statistic
+chi_p_value_bb <- chi_squared_result_bb$p.value
+
+# Statin
+# Create a contingency table for the baseline condition variable
+contingency_table <- table(merged_data$filled_statin, merged_data$baseline.condition)
+
+# Perform chi-squared test
+chi_squared_result_statin <- chisq.test(contingency_table)
+
+# Print Chi-Squared Test Result
+xsquared_statin <- chi_squared_result_statin$statistic
+chi_p_value_statin <- chi_squared_result_statin$p.value
+
+# Create the overall comparison table
+chi_squared_comparison_table <- data.table(
+  Medication = c("ACE Inhibitors", "Beta Blockers", "Statins"),
+  `Chi-Squared Statistic` = c(round(xsquared_ace,3), round(xsquared_bb,3), round(xsquared_statin,3)),
+  `P-Value` = c(p_value_ace, p_value_bb, p_value_statin)
+)
+
+# Use DT to create an interactive table
+datatable(chi_squared_comparison_table, 
+          rownames = FALSE, 
+          options = list(
+            dom = 't',  # This removes extra search and pagination functionality, keeping it simple
+            columnDefs = list(list(className = 'dt-center', targets = "_all"))
+          ))
+```
+
+**Key Observations**:
+
+1. Chi-Squared Statistic:
+
+* **ACE inhibitors** have the **highest chi-squared statistic** (`r round(xsquared_ace,3)`), indicating that the distribution of baseline conditions between early initiators and non-initiators differs the most compared to the other two medications.
+
+2. Significance:
+
+* The p-values for all three medications are extremely small, which indicates that the differences in baseline conditions between early initiators and non-initiators are highly statistically significant.
+
+**Potential benefits of this question**:
+
+These insights can inform healthcare providers when identifying which patient groups may require more support or education to initiate their treatment promptly.
+
+### Polypharmacy
+
+What is the relationship between the number of different medications (ACE inhibitors, beta blockers, and statins) a patient is prescribed and their long-term adherence?
+
+This question would help the client better understand how treatment complexity (in terms of the number of different medications) influences adherence behavior.
+
+```{r}
+# Create a column that counts the number of medications each patient is prescribed
+adherence[, num_meds := ace + bb + statin]
+
+# Filter patients with at least 1 year of follow-up
+adherence_filtered <- filter_follow_up(adherence, one_year)
+adherence_1_year <- adherence_filtered[t1 < one_year]
+adherence_1_year[, t2 := pmin(t2, one_year)] # Clip t2 at 365 days to stay within the first year
+
+# Calculate adherence for each medication as a proportion of 365 days
+adherence_1_year[, ace_adherence := sum((t2 - t1) * ace) / 365, by = id]
+adherence_1_year[, bb_adherence := sum((t2 - t1) * bb) / 365, by = id]
+adherence_1_year[, statin_adherence := sum((t2 - t1) * statin) / 365, by = id]
+
+# Summarize adherence data for each patient
+adherence_summary <- adherence_1_year[, .(
+  ace_adherence = mean(ace_adherence, na.rm = TRUE),
+  bb_adherence = mean(bb_adherence, na.rm = TRUE),
+  statin_adherence = mean(statin_adherence, na.rm = TRUE),
+  num_meds = max(num_meds)  # Maximum number of medications the patient is on
+), by = id]
+
+# Linear regression models for adherence as a function of number of medications
+model_ace <- lm(ace_adherence ~ num_meds, data = adherence_summary)
+model_bb <- lm(bb_adherence ~ num_meds, data = adherence_summary)
+model_statin <- lm(statin_adherence ~ num_meds, data = adherence_summary)
+
+coef_ace <- coef(model_ace)["num_meds"]
+coef_bb <- coef(model_bb)["num_meds"]
+coef_statin <- coef(model_statin)["num_meds"]
+
+summary_ace <- summary(model_ace)
+summary_bb <- summary(model_bb)
+summary_statin <- summary(model_statin)
+
+p_value_ace <- summary_ace$coefficients["num_meds", "Pr(>|t|)"]
+p_value_bb <- summary_bb$coefficients["num_meds", "Pr(>|t|)"]
+p_value_statin <- summary_statin$coefficients["num_meds", "Pr(>|t|)"]
+
+# Output results
+results <- data.table(
+  Medication = c("ACE Inhibitors", "Beta Blockers", "Statins"),
+  Coefficient = c(round(coef_ace,3), round(coef_bb,3), round(coef_statin,3)),
+  `P-Value` = c(p_value_ace, p_value_bb, p_value_statin)
+)
+
+datatable(results, rownames = FALSE, options = list(dom = 't'))
+
+```
+
+**Key Observations**:
+
+1. Positive impact on adherence:
+
+* Across all three medications, the number of different medications a patient is on positively affects their adherence, but the degree of impact varies. The largest effect is seen for ACE inhibitors (`r round(coef_ace,3)`) and beta blockers (`r round(coef_bb,3)`), while the impact is lower for statins (`r round(coef_statin,3)`).
+
+2. Significance:
+
+* All the results for the number of medications are highly significant (p < 2e-16), indicating that the number of medications strongly influences adherence for all three classes of drugs.
+
+**Conclusions**: 
+
+These results suggest that patients who are prescribed multiple medications (ACE inhibitors, beta blockers, or statins) tend to have better adherence rates for each medication. However, the effect is slightly stronger for ACE inhibitors and beta blockers compared to statins. This could indicate that interventions or patient education focusing on polypharmacy might have different levels of success depending on the specific medication being targeted.
+
+
+**Potential benefits of this question**:
+
+Patient Outcomes: Identifying whether patients who are prescribed multiple medications struggle with adherence can lead to interventions that improve health outcomes for those with complex health conditions.
+
+Adherence Support: The findings could inform policies or tools (e.g., combined pill packs, medication reminders) that make it easier for patients to manage multiple medications, potentially improving adherence rates.
+
+

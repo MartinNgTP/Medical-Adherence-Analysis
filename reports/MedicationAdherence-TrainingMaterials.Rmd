@@ -1,0 +1,224 @@
+---
+title: "Medication Adherence: Training Material"
+author: "Martin Ng"
+output: 
+  html_document:
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r seed}
+set.seed(41)
+```
+
+```{r libraries}
+library(data.table)
+library(DT)
+```
+
+```{r constants}
+
+```
+
+```{r functions}
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+```
+
+```{r load_data}
+adherence <- fread(file.path("..", "data", "adherence.csv"), verbose = F)  
+baseline_measurements <- fread(file.path("..", "data", "baseline_measurements.csv"), verbose = F)
+```
+
+```{r explore_data, eval = FALSE}
+
+```
+
+
+```{r clean_data}
+
+```
+
+
+
+## Introduction {.tabset}
+
+This is the training material for generating a monthly report for health insurance company X, intended to highlight some of the most challenging parts of understanding and utilizing the data.
+
+The components to generate this report include:
+
+* A reporting template (.Rmd file) that is programmed to calculate the answers to the questions provided, this serves as the basic monthly report.
+* A reporting template (.Rmd file) that is programmed to perform some independent investigation.
+
+
+### Data Exploration {.tabset}
+
+Files needed for generating report include:
+
+* Baseline Measurements e.g. “baseline measurements.csv”
+* Adherence e.g. “adherence.csv”
+
+
+#### Baseline Measurements
+
+Baseline Measurements contains baseline demographic and clinical information about patients.
+
+All columns of data are correctly formatted with no missing value, so no cleaning needed.
+
+
+```{r}
+head(baseline_measurements)
+```
+
+
+#### Adherence 
+
+Adherence contains information on patients' medication adherence over time.
+
+All columns of data are correctly formatted with no missing value, so no cleaning needed.
+
+```{r}
+head(adherence)
+```
+
+Important concepts:
+
+* t1: The starting time (in days) for a particular period of observation or adherence to a medication.
+* e.g. For the first record, t1 is 0, meaning this is the first day of observation.
+
+* t2: The ending time (in days) for the period of observation or adherence to a medication.
+* e.g. For the first record, t2 is 32, meaning the observation period lasted for 32 days.
+
+* ace, bb and statin: A binary variable indicating whether the patient was taking the med during this time period (1 for yes, 0 for no).
+
+
+
+### Basic Report {.tabset}
+
+The reporting template contains 10 questions where answers will be automatically generated.
+
+Functions are created and used repeatedly to answer the questions, they are stored in the “functions” section.
+
+Areas to be aware of:
+
+#### Functions
+
+**calculate_adherence_days()**:
+
+To calculate adherence days for adherence rate, get each patient's t1 when medication is received (=1), which is saved as first_t1, then filter t1 >= first_t1 and get the sum of (t2-t1)* get(medication).
+```{r, eval=FALSE, echo=TRUE}
+# Function to calculate adherence days for each medication starting from the first adherence t1 for each patient
+calculate_adherence_days <- function(adherence_data, first_data, medication) {
+  # Merge the first adherence time back with the main adherence data within the first year
+  merged_data <- merge(adherence_data, first_data[, .(id, first_t1 = t1)], by = "id", all.x = TRUE)
+  
+  # Filter the rows where t1 is greater than or equal to the first time the medication was possessed
+  adherence_filtered <- merged_data[t1 >= first_t1]
+  
+  # Calculate the total adherence days for each patient
+  adherence_days_summary <- adherence_filtered[, .(adherence_days = sum((t2 - t1) * get(medication))), by = id]
+  
+  return(adherence_days_summary)
+}
+```
+
+
+**calculate_continuous_duration()**:
+
+To calculate how long do patients continuously have a filled prescription, one must consider the case that no gap ever occurs.
+```{r, eval=FALSE, echo=TRUE}
+# If no gap occurs, set the end_t1 to the max of t2 (follow-up end)
+if (length(end_t1) == 0) {
+  end_t1 <- max(t2)
+} else {
+  end_t1 <- min(end_t1, na.rm = TRUE)
+}
+```
+
+
+
+#### "One Year"
+
+Both **Q2** and **Q4** ask for one-year adherence while **Q3** limits the answer to during the first year, so only use data where t2 <= 365, achieved by filtering t1 < 365 and then using pmin() to clip t2 at 365.
+```{r, eval=FALSE, echo=TRUE}
+# Keep only records within the first year (t2 <= 365)
+adherence_1_year <- adherence_filtered[t1 < one_year]
+adherence_1_year[, t2 := pmin(t2, one_year)] 
+```
+
+**Special Case**:
+
+**Q9** asks for one-year adherence too, but **starting at two weeks after the initial diagnosis**, so only use data where t1>= 14 and t2<= 379 (365+14), achieved by filtering t1 < 379, then using pmax() to clip t1 at 14 and pmin() to clip t2 at 379.
+```{r, eval=FALSE, echo=TRUE}
+# Clip t1 to 14 and t2 to 379, but exclude records where t2 < 14
+adherence_1_year <- adherence_filtered[t2 >= two_weeks & t1 < 379]    
+adherence_1_year[, t1 := pmax(t1, two_weeks)]              
+adherence_1_year[, t2 := pmin(t2, 379)]            
+```
+
+
+
+#### Q6
+
+To conduct chi-squared test of independence, convert the data into a contingency table first.
+```{r, eval=FALSE, echo=TRUE}
+# Create a contingency table for the baseline condition variable
+contingency_table <- table(merged_data$filled_statin, merged_data$baseline.condition)
+
+# Perform chi-squared test
+chi_squared_result <- chisq.test(contingency_table)
+```
+
+
+#### Q7
+
+After conducting the logistic regression, the model coefficients are not the odds ratios. The estimated odds ratios are the exponential of the model's estimated coefficients. 
+```{r, eval=FALSE, echo=TRUE}
+# Extract odds ratios for each model
+odds_ratios_ace <- exp(coef(model_ace))
+odds_ratios_bb <- exp(coef(model_bb))
+odds_ratios_statin <- exp(coef(model_statin))
+```
+
+
+
+
+### Independent Investigation {.tabset}
+
+The independent investigation focused on 2 areas:
+
+1. Differences in covariates between early initiators and non-initiators for **all medications**.
+
+2. Effect of polypharmacy on the adherence of patients
+
+
+#### Early vs Non-initiators
+
+For the t-tests and Chi-squared tests for ACE Inhibitors and Beta Blockers, reference Q6 and change variable names.
+
+#### Polypharmacy
+
+Since one-year adherence is examined here, dont forget to clip the t2 at 365 like Q2-4.
+```{r, eval=FALSE, echo=TRUE}
+# Filter patients with at least 1 year of follow-up
+adherence_filtered <- filter_follow_up(adherence, one_year)
+adherence_1_year <- adherence_filtered[t1 < one_year]
+adherence_1_year[, t2 := pmin(t2, one_year)] # Clip t2 at 365 days to stay within the first year
+```
+
+
+
+
+
+
+
+
+
+
